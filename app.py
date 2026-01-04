@@ -54,95 +54,88 @@ run = st.sidebar.button("Run Backtest")
 # MAIN LOGIC
 # --------------------------------------------------
 if run:
-
     if len(tickers) < 2:
         st.error("Please select at least two tickers.")
         st.stop()
 
-    with st.spinner("Running analysis..."):
-
+    with st.spinner("Fetching data and running cointegration tests..."):
+        # 1. Load data
         prices = load_prices(tickers, start, end)
 
-        if prices.isnull().all().any():
-            st.error("One or more tickers returned no usable price data.")
+        # 2. Cleanup: Remove columns with more than 20% missing values
+        # This prevents the cointegration test from crashing on "bad" tickers
+        prices = prices.dropna(thresh=len(prices) * 0.8, axis=1).dropna()
+
+        if prices.empty or prices.shape[1] < 2:
+            st.error("Not enough valid data points found after cleaning. Try a different date range.")
             st.stop()
 
+        # 3. Find Cointegrated Pairs
         pairs = find_cointegrated_pairs(prices)
 
-        if len(pairs) == 0:
-            st.error("No valid pairs could be evaluated (insufficient overlapping data).")
+        if not pairs:
+            st.error("No valid pairs could be evaluated with the current selection.")
             st.stop()
 
-        # Ranked pairs – always safe
+        # 4. Get the best pair
         t1, t2, pval = pairs[0]
 
-        if pval <= 0.05:
-            st.success(f"Tradable cointegrated pair found (p-value = {pval:.4f})")
-        else:
-            st.warning(
-                f"No statistically tradable pairs found.\n\n"
-                f"Showing best research candidate instead (p-value = {pval:.4f})."
-            )
-
-        # --------------------------------------------------
-        # STRATEGY
-        # --------------------------------------------------
+        # --- FIX FOR MULTI-INDEXING ---
+        # We ensure we are grabbing the column correctly regardless of DF structure
         s1 = prices[t1]
         s2 = prices[t2]
 
+        if pval <= 0.05:
+            st.success(f"Tradable cointegrated pair found: {t1} & {t2} (p-value: {pval:.4f})")
+        else:
+            st.warning(f"No statistically significant pairs (p < 0.05). Showing best candidate: {t1}/{t2}")
+
+        # --------------------------------------------------
+        # STRATEGY & BACKTEST
+        # --------------------------------------------------
         spread, hedge = compute_spread(s1, s2)
         z = zscore(spread)
 
-        # 🔴 MATCHES BACKTEST SIGNATURE EXACTLY
-        returns = backtest(
-            spread,
-            z,
-            entry=entry_z,
-            exit=exit_z
-        )
-
+        returns = backtest(spread, z, entry=entry_z, exit=exit_z)
         cum_returns = returns.cumsum()
 
         # --------------------------------------------------
-        # METRICS
+        # METRICS DISPLAY
         # --------------------------------------------------
-        st.subheader("Selected Pair")
-        st.write(f"**{t1} / {t2}**")
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Sharpe Ratio", f"{sharpe_ratio(returns):.2f}")
-        col2.metric("Max Drawdown", f"{max_drawdown(cum_returns):.2%}")
-        col3.metric("Hedge Ratio", f"{hedge:.2f}")
+        st.subheader(f"Strategy Performance: {t1} vs {t2}")
+        
+        m_col1, m_col2, m_col3 = st.columns(3)
+        m_col1.metric("Sharpe Ratio", f"{sharpe_ratio(returns):.2f}")
+        m_col2.metric("Max Drawdown", f"{max_drawdown(cum_returns):.2%}")
+        m_col3.metric("Hedge Ratio (Beta)", f"{hedge:.3f}")
 
         # --------------------------------------------------
         # PLOTS
         # --------------------------------------------------
-        st.subheader("Cumulative Strategy PnL")
+        tab1, tab2 = st.tabs(["PnL Curve", "Z-Score Signals"])
+        
+        with tab1:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(cum_returns, color='green', label='Cumulative Returns')
+            ax.set_ylabel("PnL")
+            ax.grid(alpha=0.3)
+            st.pyplot(fig)
 
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(cum_returns)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("PnL")
-        ax.grid(True)
-        st.pyplot(fig)
-
-        st.subheader("Spread Z-Score")
-
-        fig2, ax2 = plt.subplots(figsize=(10, 4))
-        ax2.plot(z)
-        ax2.axhline(entry_z, linestyle="--")
-        ax2.axhline(-entry_z, linestyle="--")
-        ax2.axhline(exit_z, linestyle=":")
-        ax2.axhline(-exit_z, linestyle=":")
-        ax2.grid(True)
-        st.pyplot(fig2)
+        with tab2:
+            fig2, ax2 = plt.subplots(figsize=(10, 4))
+            ax2.plot(z, label='Spread Z-Score', color='blue')
+            ax2.axhline(entry_z, color='red', linestyle="--", label='Entry')
+            ax2.axhline(-entry_z, color='red', linestyle="--")
+            ax2.axhline(exit_z, color='orange', linestyle=":", label='Exit')
+            ax2.axhline(-exit_z, color='orange', linestyle=":")
+            ax2.legend()
+            st.pyplot(fig2)
 
         # --------------------------------------------------
-        # TOP CANDIDATES
+        # TOP CANDIDATES TABLE
         # --------------------------------------------------
-        st.subheader("Top Candidate Pairs (Lowest p-values)")
-        for a, b, p in pairs[:5]:
-            st.write(f"{a} / {b} — p-value: {p:.4f}")
+        st.subheader("Top Research Candidates")
+        st.table([{"Asset 1": p[0], "Asset 2": p[1], "P-Value": round(p[2], 4)} for p in pairs[:5]])
 
 else:
-    st.info("Select tickers and click **Run Backtest**.")
+    st.info("Adjust the sidebar parameters and click **Run Backtest** to begin.")
