@@ -15,3 +15,4 @@ Python, NumPy, Pandas, Statsmodels, Streamlit, Matplotlib
 
 ## Live App
 (Deployed on Streamlit Cloud)
+app link: https://statistical-arbitrage-pairs-trading.streamlit.app/
